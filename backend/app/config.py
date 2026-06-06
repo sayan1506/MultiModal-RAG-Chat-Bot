@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     # ── Supabase ─────────────────────────────────────────────
     supabase_url: str = ""
     supabase_key: str = ""
+    max_upload_mb: int = 50
 
 
 settings = Settings()
