@@ -57,7 +57,7 @@ def parse_file(file_path: str):
     if ext == ".pdf":
         return parse_pdf(file_path)
 
-    elif ext == ".pptx":
+    elif ext in (".pptx", ".ppt"):
         return parse_pptx(file_path)
 
     raise ValueError(f"Unsupported file type: {ext}")
