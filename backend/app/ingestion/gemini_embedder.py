@@ -3,6 +3,8 @@ from google import genai
 from google.genai import types
 from app.config import settings
 
+import time
+
 client = genai.Client(api_key=settings.gemini_api_key)
 
 
@@ -14,20 +16,31 @@ def embed_text(text: str) -> list[float]:
     return response.embeddings[0].values
 
 
-def describe_image(image_bytes: bytes) -> str:
-    """Send page PNG to Gemini Vision and get a text description."""
-    b64 = base64.b64encode(image_bytes).decode("utf-8")
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=[
-            types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
-            "Describe every visual element on this document page in detail: "
-            "text, tables, charts, diagrams, headings, and figures. "
-            "Be thorough — this description will be used for search.",
-        ],
-    )
-    return response.text
 
+def describe_image(image_bytes: bytes) -> str:
+    models_to_try = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+    
+    for model in models_to_try:
+        for attempt in range(3):  # 3 retries per model
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=[
+                        types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
+                        "Describe this image briefly.",
+                    ],
+                )
+                return response.text
+            except Exception as e:
+                if "503" in str(e) or "UNAVAILABLE" in str(e):
+                    print(f"{model} unavailable, retrying in {2**attempt}s...")
+                    time.sleep(2**attempt)  # exponential backoff: 1s, 2s, 4s
+                else:
+                    raise  # non-503 error, don't retry
+    
+    # All models failed — return empty string so pipeline continues
+    print("All Gemini models unavailable, skipping image description.")
+    return ""
 
 def embed_image(image_bytes: bytes) -> list[float]:
     """Describe image with Gemini Vision then embed the description."""

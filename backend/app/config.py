@@ -35,5 +35,8 @@ class Settings(BaseSettings):
     supabase_key: str = ""
     max_upload_mb: int = 50
 
+    local_image_store: str = "data/page_images"   # local folder for PNGs
+
 
 settings = Settings()
+
