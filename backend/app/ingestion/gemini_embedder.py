@@ -18,10 +18,10 @@ def embed_text(text: str) -> list[float]:
 
 
 def describe_image(image_bytes: bytes) -> str:
-    models_to_try = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
-    
+    models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash-lite"]
+
     for model in models_to_try:
-        for attempt in range(3):  # 3 retries per model
+        for attempt in range(2):
             try:
                 response = client.models.generate_content(
                     model=model,
@@ -32,29 +32,31 @@ def describe_image(image_bytes: bytes) -> str:
                 )
                 return response.text
             except Exception as e:
-                if "503" in str(e) or "UNAVAILABLE" in str(e):
+                err = str(e)
+                if "503" in err or "UNAVAILABLE" in err:
                     print(f"{model} unavailable, retrying in {2**attempt}s...")
-                    time.sleep(2**attempt)  # exponential backoff: 1s, 2s, 4s
+                    time.sleep(2 ** attempt)
+                elif "429" in err or "RESOURCE_EXHAUSTED" in err:
+                    print(f"{model} quota exhausted, trying next model...")
+                    break  # skip retries, try next model
                 else:
-                    raise  # non-503 error, don't retry
-    
-    # All models failed — return empty string so pipeline continues
-    print("All Gemini models unavailable, skipping image description.")
+                    break  # 404 or other permanent error, skip immediately
+
+    print("All Gemini vision models unavailable, falling back to text-only.")
     return ""
 
 def embed_image(image_bytes: bytes) -> list[float]:
-    """Describe image with Gemini Vision then embed the description."""
     description = describe_image(image_bytes)
+    if not description:
+        return []  # signals caller to use text-only path
     return embed_text(description)
 
 
 def embed_text_and_image(text: str, image_bytes: bytes) -> list[float]:
-    """
-    Average text embedding + image-description embedding.
-    Returns a normalised joint vector for multimodal retrieval.
-    """
     tv = embed_text(text)
     iv = embed_image(image_bytes)
+    if not iv:
+        return tv  # graceful text-only fallback
     avg = [(a + b) / 2 for a, b in zip(tv, iv)]
     norm = sum(x ** 2 for x in avg) ** 0.5
     return [x / norm for x in avg] if norm else avg

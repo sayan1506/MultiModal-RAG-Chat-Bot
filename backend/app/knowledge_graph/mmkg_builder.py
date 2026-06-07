@@ -30,7 +30,14 @@ class MMKGBuilder:
         entity_count = 0
         rel_count = 0
 
-        for parsed, rendered in zip(parsed_pages, rendered_pages):
+        rendered_map = {r["page_number"]: r for r in rendered_pages}
+
+        for parsed in parsed_pages:
+            rendered = rendered_map.get(parsed["page_number"])
+            if not rendered:
+                print(f"  No render for page {parsed['page_number']}, skipping image steps.")
+                continue
+
             # 1. Store PNG
             image_path = self.gcs.upload_page_png(
                 file_id, parsed["page_number"], rendered["image_bytes"]
@@ -45,9 +52,7 @@ class MMKGBuilder:
             )
 
             # 3. Extract entities
-            extracted = await extract_entities(
-                parsed["text"], rendered["image_bytes"]
-            )
+            extracted = await extract_entities(parsed["text"], rendered["image_bytes"])
 
             # 4. Create Entity nodes
             for entity in extracted.get("entities", []):

@@ -30,7 +30,7 @@ Return ONLY valid JSON — no markdown, no explanation — in this exact format:
 
 
 async def extract_entities(text: str, image_bytes: bytes) -> dict:
-    models_to_try = ["gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro"]
+    models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash-lite"]
     prompt_text = EXTRACTION_PROMPT + f"\n\nPage text:\n{text[:2000]}"
 
     for model in models_to_try:
