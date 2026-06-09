@@ -30,7 +30,7 @@ async def analyze_query(query: str) -> dict:
     """
     try:
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-2.0-flash-lite",
             contents=[ANALYSIS_PROMPT.format(query=query)],
         )
         raw = response.text
