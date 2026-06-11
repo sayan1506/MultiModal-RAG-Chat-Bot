@@ -102,14 +102,16 @@ class Neo4jStore:
                     UNWIND $keywords AS kw
                     MATCH (e:Entity)
                     WHERE toLower(e.label) CONTAINS toLower(kw)
-                    MATCH path = (e)-[*1..2]-(related)
-                    RETURN nodes(path) AS nodes, relationships(path) AS rels
+                    MATCH (e)-[r*1..2]-(related:Entity)
+                    RETURN e, related,
+                           e.id       AS src_id,
+                           related.id AS tgt_id,
+                           [rel IN r | type(rel)] AS rel_types
                     LIMIT 50
                     """,
                     keywords=keywords,
                 )
                 records = await result.data()
-
         return self._format_subgraph(records)
 
     async def get_page_nodes(self, file_id: str) -> list[dict]:
@@ -123,32 +125,47 @@ class Neo4jStore:
         return [r["p"] for r in records]
 
     def _format_subgraph(self, records: list) -> dict:
-        nodes, links = {}, []
-        for r in records:
-            # Handle both path-style and direct node-style results
-            raw_nodes = r.get("nodes", [])
-            if not raw_nodes:
-                for key in ("e", "related"):
-                    if r.get(key):
-                        raw_nodes.append(r[key])
+        nodes: dict = {}
+        links: list = []
 
-            for n in raw_nodes:
+        for r in records:
+            # ── Collect nodes ─────────────────────────────────────────────────
+            for key in ("e", "related"):
+                n = r.get(key)
                 if n is None:
                     continue
-                nid = str(n.get("id", id(n)))
-                nodes[nid] = {
-                    "id":    nid,
-                    "label": n.get("label", ""),
-                    "type":  n.get("type", "Entity"),
-                }
+                nid = str(n.get("id", ""))
+                if nid and nid not in nodes:
+                    nodes[nid] = {
+                        "id":    nid,
+                        "label": n.get("label", ""),
+                        "type":  n.get("type", "Entity"),
+                    }
 
-            for rel in r.get("rels", []):
-                if rel is None:
-                    continue
-                links.append({
-                    "source":   str(rel.start_node.id),
-                    "target":   str(rel.end_node.id),
-                    "relation": type(rel).__name__,
-                })
+            # ── Collect links (keyword query path) ────────────────────────────
+            src_id    = r.get("src_id")
+            tgt_id    = r.get("tgt_id")
+            rel_types = r.get("rel_types") or []
+
+            if src_id and tgt_id:
+                for rel_type in rel_types:
+                    links.append({
+                        "source":   str(src_id),
+                        "target":   str(tgt_id),
+                        "relation": rel_type,
+                    })
+
+            # ── Collect links (no-keyword query — r is a relationship object) ─
+            rel = r.get("r")
+            if rel is not None:
+                try:
+                    links.append({
+                        "source":   str(rel.start_node.get("id", "")),
+                        "target":   str(rel.end_node.get("id", "")),
+                        "relation": type(rel).__name__,
+                    })
+                except AttributeError:
+                    # .data() converted it to a dict/tuple — skip gracefully
+                    pass
 
         return {"nodes": list(nodes.values()), "links": links}

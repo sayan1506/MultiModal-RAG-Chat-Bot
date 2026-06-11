@@ -1,144 +1,84 @@
-"""Conversation history persistence — stores and retrieves chat turns via Supabase.
-
-Handles conversation turn persistence to Supabase's chat_history table.
-Failures in persistence operations never crash the chat flow.
-"""
-
+"""Chat history — save and retrieve conversation turns via Supabase."""
 from __future__ import annotations
 
-from typing import Any
-from datetime import datetime
+import datetime
 
 from supabase import create_client, Client
 
 from app.config import settings
 
+# Module-level lazy client — created once on first use
+_client: Client | None = None
 
-class ConversationHistory:
-    """Manages conversation history persistence via Supabase."""
 
-    def __init__(self):
-        """Initialize Supabase client."""
-        self.client: Client = create_client(
-            supabase_url=settings.supabase_url,
-            supabase_key=settings.supabase_key,
-        )
-        self.table_name = "chat_history"
+def _get_client() -> Client:
+    global _client
+    if _client is None:
+        if not settings.supabase_url or not settings.supabase_key:
+            raise RuntimeError(
+                "SUPABASE_URL and SUPABASE_KEY must be set in .env "
+                "before using chat history."
+            )
+        _client = create_client(settings.supabase_url, settings.supabase_key)
+    return _client
 
-    async def save_turn(
-        self,
-        session_id: str,
-        user_query: str,
-        assistant_response: str,
-        metadata: dict[str, Any] | None = None,
-    ) -> bool:
-        """Save a conversation turn to Supabase.
 
-        Args:
-            session_id: Unique session identifier
-            user_query: The user's question
-            assistant_response: The assistant's answer
-            metadata: Optional dict with citations, models_used, etc.
+async def save_turn(
+    session_id: str,
+    user_message: str,
+    ai_response: str,
+    citations: dict,
+) -> None:
+    """
+    Persist one conversation turn to the chat_history table.
 
-        Returns:
-            True if saved successfully, False otherwise
-        """
-        try:
-            data = {
-                "session_id": session_id,
-                "user_query": user_query,
-                "assistant_response": assistant_response,
-                "metadata": metadata or {},
-                "created_at": datetime.utcnow().isoformat(),
+    Args:
+        session_id:   Identifies the conversation thread (from WS message).
+        user_message: The raw query the user sent.
+        ai_response:  The full assembled answer that was streamed back.
+        citations:    The citations dict sent to the frontend.
+
+    Note:
+        Failures are caught and logged — history failure must never
+        crash or block the chat response flow.
+    """
+    try:
+        _get_client().table("chat_history").insert(
+            {
+                "session_id":   session_id,
+                "user_message": user_message,
+                "ai_response":  ai_response,
+                "citations":    citations,
+                "created_at":   datetime.datetime.utcnow().isoformat(),
             }
+        ).execute()
+    except Exception as e:
+        print(f"[history] save_turn failed (non-fatal): {e}")
 
-            result = self.client.table(self.table_name).insert(data).execute()
 
-            if result.data:
-                print(f"Saved conversation turn for session {session_id}")
-                return True
-            else:
-                print(f"Failed to save conversation turn: no data returned")
-                return False
+async def get_history(session_id: str | None = None) -> list[dict]:
+    """
+    Retrieve past conversation turns, newest first.
 
-        except Exception as e:
-            # Never crash the chat flow due to persistence failure
-            print(f"Error saving conversation turn: {e}")
-            return False
+    Args:
+        session_id: If provided, filter to this session only.
+                    If None, return the 50 most recent turns globally.
 
-    async def get_session_history(
-        self,
-        session_id: str,
-        limit: int = 50,
-    ) -> list[dict[str, Any]]:
-        """Retrieve conversation history for a session.
-
-        Args:
-            session_id: Unique session identifier
-            limit: Maximum number of turns to retrieve (most recent first)
-
-        Returns:
-            List of conversation turns, ordered by creation time (oldest first)
-        """
-        try:
-            result = (
-                self.client.table(self.table_name)
-                .select("*")
-                .eq("session_id", session_id)
-                .order("created_at", desc=False)
-                .limit(limit)
-                .execute()
-            )
-
-            if result.data:
-                return result.data
-            else:
-                return []
-
-        except Exception as e:
-            print(f"Error retrieving session history: {e}")
-            return []
-
-    async def get_all_sessions(
-        self,
-        limit: int = 100,
-    ) -> list[dict[str, Any]]:
-        """Retrieve all conversation sessions (grouped by session_id).
-
-        Args:
-            limit: Maximum number of sessions to retrieve
-
-        Returns:
-            List of dicts with session_id and last message timestamp
-        """
-        try:
-            # Get distinct sessions with their most recent message
-            result = (
-                self.client.table(self.table_name)
-                .select("session_id, created_at")
-                .order("created_at", desc=True)
-                .limit(limit * 10)  # Over-fetch to account for multiple turns per session
-                .execute()
-            )
-
-            if not result.data:
-                return []
-
-            # Group by session_id and keep only the most recent entry per session
-            sessions_dict = {}
-            for row in result.data:
-                session_id = row["session_id"]
-                if session_id not in sessions_dict:
-                    sessions_dict[session_id] = {
-                        "session_id": session_id,
-                        "last_message_at": row["created_at"],
-                    }
-
-            # Convert to list and limit
-            sessions = list(sessions_dict.values())
-            sessions.sort(key=lambda x: x["last_message_at"], reverse=True)
-            return sessions[:limit]
-
-        except Exception as e:
-            print(f"Error retrieving sessions: {e}")
-            return []
+    Returns:
+        List of row dicts from chat_history table, or [] on error.
+    """
+    try:
+        q = (
+            _get_client()
+            .table("chat_history")
+            .select("*")
+            .order("created_at", desc=True)
+            .limit(50)
+        )
+        if session_id:
+            q = q.eq("session_id", session_id)
+        result = q.execute()
+        return result.data or []
+    except Exception as e:
+        print(f"[history] get_history failed (non-fatal): {e}")
+        return []

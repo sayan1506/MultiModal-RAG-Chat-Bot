@@ -1,22 +1,21 @@
-"""Entity extractor — uses Gemini to pull entities and relationships from a page."""
+"""Entity extractor — extracts entities and relationships using Gemma 4 via Ollama."""
 from __future__ import annotations
 
-import base64
 import json
 import re
-import time
-from google import genai
-from google.genai import types
-from app.config import settings
 
-client = genai.Client(api_key=settings.gemini_api_key)
+import ollama
+
+# ---------------------------------------------------------------------------
+# Prompt
+# ---------------------------------------------------------------------------
 
 EXTRACTION_PROMPT = """You are a knowledge graph entity extractor.
 Given document text and a page image, extract:
 1. Named entities (people, organizations, concepts, technical terms, figures)
 2. Relationships between entities
 
-Return ONLY valid JSON — no markdown, no explanation — in this exact format:
+Return ONLY valid JSON — no markdown, no explanation, no code fences:
 {
   "entities": [
     {"id": "e1", "label": "Entity Name", "type": "Concept|Entity|Figure|Term"}
@@ -26,43 +25,80 @@ Return ONLY valid JSON — no markdown, no explanation — in this exact format:
   ]
 }"""
 
+# ---------------------------------------------------------------------------
+# Models (primary → fallback)
+# ---------------------------------------------------------------------------
 
+MODELS = ["gemma4:e4b", "gemma4:26b"]
 
+# Empty result constant — returned on all failure paths
+_EMPTY = {"entities": [], "relationships": []}
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 async def extract_entities(text: str, image_bytes: bytes) -> dict:
-    models_to_try = ["gemini-2.5-flash", "gemini-2.0-flash-lite"]
+    """
+    Extract entities and relationships from a document page.
+
+    Args:
+        text:        Parsed text content of the page (truncated to 2000 chars).
+        image_bytes: Raw PNG bytes of the rendered page image.
+
+    Returns:
+        Dict with keys "entities" and "relationships".
+        Returns {"entities": [], "relationships": []} on any failure.
+    """
     prompt_text = EXTRACTION_PROMPT + f"\n\nPage text:\n{text[:2000]}"
+    client = ollama.AsyncClient(host="http://localhost:11434")
 
-    for model in models_to_try:
-        for attempt in range(3):
+    for model in MODELS:
+        try:
+            response = await client.chat(
+                model=model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": prompt_text,
+                        "images": [image_bytes],  # vision: page PNG alongside text
+                    }
+                ],
+                options={"temperature": 0.1},  # low temp for deterministic JSON
+            )
+
+            raw: str = response["message"]["content"] or ""
+
+            # Strip markdown fences if model added them
+            raw = re.sub(r"```(?:json)?", "", raw).strip().rstrip("`").strip()
+
+            # Attempt full JSON parse
             try:
-                response = client.models.generate_content(
-                    model=model,
-                    contents=[
-                        types.Part.from_bytes(data=image_bytes, mime_type="image/png"),
-                        prompt_text,
-                    ],
-                )
-                raw = response.text
-                raw = re.sub(r"```(?:json)?", "", raw).strip()
-                return json.loads(raw)
-
+                result = json.loads(raw)
+                # Validate expected keys are present
+                if "entities" in result and "relationships" in result:
+                    return result
+                # Keys missing — try next model
+                print(f"[entity_extractor] {model} returned JSON but missing keys, trying next...")
+                continue
             except json.JSONDecodeError:
-                match = re.search(r"\{.*\}", raw, re.DOTALL)
-                if match:
-                    try:
-                        return json.loads(match.group())
-                    except json.JSONDecodeError:
-                        pass
-                return {"entities": [], "relationships": []}
+                pass
 
-            except Exception as e:
-                if "503" in str(e) or "UNAVAILABLE" in str(e):
-                    print(f"{model} unavailable (attempt {attempt+1}), retrying in {2**attempt}s...")
-                    time.sleep(2**attempt)
-                else:
-                    print(f"Entity extraction failed: {e}")
-                    return {"entities": [], "relationships": []}
+            # Fallback: try to find a JSON object anywhere in the response
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            if match:
+                try:
+                    result = json.loads(match.group())
+                    if "entities" in result and "relationships" in result:
+                        return result
+                except json.JSONDecodeError:
+                    pass
 
-    print("All Gemini models unavailable for entity extraction.")
-    return {"entities": [], "relationships": []}
+            print(f"[entity_extractor] {model} returned non-parseable output, trying next...")
+
+        except Exception as e:
+            print(f"[entity_extractor] {model} error: {e}, trying next model...")
+            continue
+
+    print("[entity_extractor] All models failed, returning empty result.")
+    return _EMPTY

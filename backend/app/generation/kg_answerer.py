@@ -1,142 +1,58 @@
-"""Knowledge graph answerer — generates answers using Neo4j subgraph context.
-
-Retrieves relevant subgraph from Neo4j and uses it as structured context
-for Gemini generation. Truncates large subgraphs to stay within token limits.
-"""
-
+"""KG answerer — answers questions from the Neo4j knowledge graph context."""
 from __future__ import annotations
 
 import json
-from typing import Any
 
-from google import genai
+import ollama
 
-from app.config import settings
-from app.retrieval.neo4j_retriever import Neo4jRetriever
+MODELS = ["gemma4:e4b", "gemma4:26b"]
 
 
-class KGAnswerer:
-    """Answers queries using Neo4j knowledge graph context."""
+async def answer_from_kg(query: str, subgraph: dict) -> str:
+    """
+    Answer the user query using knowledge graph entities and relationships.
 
-    def __init__(self):
-        self.client = genai.Client(api_key=settings.gemini_api_key)
-        self.neo4j_retriever = Neo4jRetriever()
-        self.primary_model = "gemini-2.0-flash-lite"
-        self.fallback_model = "gemini-2.5-flash"
-        self.max_subgraph_chars = 3000
+    Args:
+        query:    The user's question.
+        subgraph: Dict with {"nodes": [...], "links": [...]} from Neo4jRetriever.
 
-    async def answer_with_graph(
-        self,
-        query: str,
-        keywords: list[str],
-    ) -> dict[str, Any]:
-        """Generate an answer using knowledge graph context.
+    Returns:
+        A string answer, or "" if the subgraph is empty or all models fail.
+    """
+    nodes = subgraph.get("nodes", [])
+    if not nodes:
+        # No graph data — skip rather than sending an empty context prompt
+        return ""
 
-        Args:
-            query: The user's question
-            keywords: Entity keywords for subgraph retrieval
+    # Truncate large graphs to stay within context window
+    context = json.dumps(subgraph, indent=2)[:4000]
 
-        Returns:
-            Dict with 'answer' (str), 'subgraph' (dict), 'model_used' (str)
-        """
-        if not keywords:
-            return {
-                "answer": "No knowledge graph entities identified for this query.",
-                "subgraph": {"nodes": [], "links": []},
-                "model_used": None,
-            }
+    prompt = f"""You are an AI assistant answering questions using a knowledge graph.
 
-        # Retrieve subgraph from Neo4j
-        subgraph = await self.neo4j_retriever.retrieve(
-            keywords=keywords,
-            depth=2,
-        )
+Knowledge Graph Context (entities and relationships from the document):
+{context}
 
-        if not subgraph.get("nodes"):
-            return {
-                "answer": "No relevant knowledge graph entities found.",
-                "subgraph": {"nodes": [], "links": []},
-                "model_used": None,
-            }
+User Question: {query}
 
-        # Build prompt with truncated subgraph
-        prompt = self._build_kg_prompt(query, subgraph)
+Instructions:
+- Answer using ONLY the knowledge graph context above.
+- Be concise and factual.
+- If the context does not contain enough information, say:
+  "The knowledge graph does not contain enough information to answer this."
+- Do not invent information not present in the graph."""
 
-        # Generate answer with fallback
-        answer, model_used = await self._generate_with_fallback(prompt)
+    client = ollama.AsyncClient(host="http://localhost:11434")
 
-        return {
-            "answer": answer,
-            "subgraph": subgraph,
-            "model_used": model_used,
-        }
-
-    def _build_kg_prompt(
-        self,
-        query: str,
-        subgraph: dict,
-    ) -> str:
-        """Build a prompt that includes knowledge graph context."""
-        # Serialize subgraph to JSON
-        subgraph_json = json.dumps(subgraph, indent=2)
-
-        # Truncate if too large
-        if len(subgraph_json) > self.max_subgraph_chars:
-            subgraph_json = subgraph_json[: self.max_subgraph_chars] + "\n... [truncated]"
-
-        return f"""You are an expert knowledge graph reasoning assistant.
-
-The user has asked: "{query}"
-
-Use the following knowledge graph subgraph to answer the question.
-The subgraph contains nodes (entities) and links (relationships).
-
-Knowledge Graph Context:
-{subgraph_json}
-
-Provide a detailed answer based on the knowledge graph structure.
-If the answer cannot be determined from the graph, state that clearly.
-"""
-
-    async def _generate_with_fallback(
-        self,
-        prompt: str,
-    ) -> tuple[str, str]:
-        """Generate answer with primary model, fallback to secondary on quota exhaustion.
-
-        Returns:
-            Tuple of (answer_text, model_used)
-        """
-        # Try primary model
+    for model in MODELS:
         try:
-            response = self.client.models.generate_content(
-                model=self.primary_model,
-                contents=prompt,
+            response = await client.chat(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
             )
-            return response.text, self.primary_model
-
+            return response["message"]["content"] or ""
         except Exception as e:
-            error_msg = str(e).lower()
+            print(f"[kg_answerer] {model} error: {e}, trying next model...")
+            continue
 
-            # Check for quota exhaustion
-            if "quota" in error_msg or "resource_exhausted" in error_msg:
-                print(f"Primary model quota exhausted, falling back to {self.fallback_model}")
-                try:
-                    response = self.client.models.generate_content(
-                        model=self.fallback_model,
-                        contents=prompt,
-                    )
-                    return response.text, self.fallback_model
-
-                except Exception as fallback_error:
-                    print(f"Fallback model also failed: {fallback_error}")
-                    return (
-                        "Knowledge graph analysis unavailable due to service limits.",
-                        None,
-                    )
-            else:
-                print(f"KG answering error: {e}")
-                return (
-                    f"Knowledge graph analysis failed: {str(e)}",
-                    None,
-                )
+    print("[kg_answerer] All models failed.")
+    return ""
