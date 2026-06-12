@@ -1,7 +1,7 @@
 """Pinecone retriever — ANN vector search against the Pinecone index."""
 from __future__ import annotations
 
-from app.ingestion.gemini_embedder import embed_text
+from app.ingestion.gme_embedder import embed_text
 from app.ingestion.pinecone_upserter import search_vector
 
 

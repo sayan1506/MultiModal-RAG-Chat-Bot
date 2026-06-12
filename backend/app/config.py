@@ -30,6 +30,15 @@ class Settings(BaseSettings):
     neo4j_user: str = ""
     neo4j_password: str = ""
 
+    # ── GitHub Models ─────────────────────────────────────────
+    github_token: str = ""
+
+    # ── MegaRAG Hyperparameters (from paper) ─────────────────
+    top_k_entities: int = 60          # paper default
+    top_k_relations: int = 60         # paper default
+    top_m_pages: int = 6              # paper default
+    refinement_subgraph_size: int = 120  # paper default
+
     # ── Supabase ─────────────────────────────────────────────
     supabase_url: str = ""
     supabase_key: str = ""

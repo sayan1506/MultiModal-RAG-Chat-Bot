@@ -1,79 +1,74 @@
-"""Query analyzer — decomposes user query into keywords and semantic concepts."""
+"""Query analyzer — extracts low-level and high-level keywords from user query.
+
+Low-level keywords  → entity store retrieval (specific named entities)
+High-level keywords → relation store retrieval (broad concepts/themes)
+
+Model: GitHub GPT-4o-mini → Gemma4 fallback
+"""
 from __future__ import annotations
 
 import json
 import re
 
-import ollama
+from app.ingestion.github_client import call_gpt4o_mini_async
 
-# ---------------------------------------------------------------------------
-# Prompt
-# ---------------------------------------------------------------------------
+_ANALYSIS_PROMPT = """Analyze the following user query for a document retrieval system.
 
-ANALYSIS_PROMPT = """Analyze this search query for a RAG system.
-Query: "{query}"
-Return ONLY valid JSON — no markdown, no explanation, no code fences:
+Extract two types of keywords:
+1. low_level_keywords: Specific named entities, technical terms, people,
+   organizations, or precise concepts (for entity-level graph retrieval)
+2. high_level_keywords: Broader themes, topics, or conceptual categories
+   (for relation-level graph retrieval)
+
+User query: {query}
+
+Return ONLY this JSON (no markdown, no explanation):
 {{
-  "low_level_keywords":  ["exact term1", "exact term2"],
-  "high_level_concepts": ["semantic concept1", "semantic concept2"],
-  "query_type": "factual|analytical|visual|comparative"
+  "low_level_keywords": ["keyword1", "keyword2"],
+  "high_level_keywords": ["theme1", "theme2"]
 }}"""
 
-# ---------------------------------------------------------------------------
-# Models (primary → fallback)
-# ---------------------------------------------------------------------------
+_EMPTY_ANALYSIS = {
+    "low_level_keywords": [],
+    "high_level_keywords": [],
+}
 
-MODELS = ["gemma4:e4b", "gemma4:26b"]
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 async def analyze_query(query: str) -> dict:
     """
-    Decompose a user query into retrieval-friendly components.
+    Extract low-level and high-level keywords from a user query.
 
     Returns:
-        low_level_keywords  — exact words to match in Neo4j entity labels
-        high_level_concepts — broader semantic terms for Pinecone search
-        query_type          — hint for generation layer
+        Dict with "low_level_keywords" and "high_level_keywords" lists.
+        Falls back to treating the whole query as low-level keywords on failure.
     """
-    prompt = ANALYSIS_PROMPT.format(query=query)
-    client = ollama.AsyncClient(host="http://localhost:11434")
+    prompt = _ANALYSIS_PROMPT.format(query=query)
+    raw = await call_gpt4o_mini_async(prompt, max_tokens=200, temperature=0.0)
 
-    for model in MODELS:
+    if not raw:
+        # Minimal fallback: split query into words as keywords
+        words = [w.strip(".,?!") for w in query.split() if len(w) > 3]
+        return {"low_level_keywords": words[:5], "high_level_keywords": []}
+
+    # Strip markdown fences
+    raw = re.sub(r"```(?:json)?", "", raw).strip().rstrip("`").strip()
+
+    try:
+        result = json.loads(raw)
+        if "low_level_keywords" in result and "high_level_keywords" in result:
+            return result
+    except json.JSONDecodeError:
+        pass
+
+    # Fallback parse
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if match:
         try:
-            response = await client.chat(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                options={"temperature": 0.1},  # low temp for deterministic JSON
-            )
-            raw: str = response["message"]["content"]
+            result = json.loads(match.group())
+            if "low_level_keywords" in result:
+                return result
+        except json.JSONDecodeError:
+            pass
 
-            # Strip markdown fences if model added them anyway
-            raw = re.sub(r"```(?:json)?", "", raw).strip().rstrip("`").strip()
-
-            try:
-                return json.loads(raw)
-            except json.JSONDecodeError:
-                # Try extracting the JSON object from surrounding text
-                match = re.search(r"\{.*\}", raw, re.DOTALL)
-                if match:
-                    try:
-                        return json.loads(match.group())
-                    except json.JSONDecodeError:
-                        pass
-            # JSON parse failed — try next model
-            print(f"[query_analyzer] {model} returned non-JSON, trying next model...")
-
-        except Exception as e:
-            print(f"[query_analyzer] {model} error: {e}, trying next model...")
-            continue
-
-    # All models failed — keyword-split fallback
-    print("[query_analyzer] All models failed, using keyword fallback.")
-    return {
-        "low_level_keywords":  query.split(),
-        "high_level_concepts": [query],
-        "query_type":          "factual",
-    }
+    words = [w.strip(".,?!") for w in query.split() if len(w) > 3]
+    return {"low_level_keywords": words[:5], "high_level_keywords": []}

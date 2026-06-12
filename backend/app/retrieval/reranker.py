@@ -1,4 +1,8 @@
-"""Re-ranker — merges Pinecone and Neo4j results into a single ranked list."""
+"""Re-ranker — merges Pinecone and Neo4j results with unified scoring.
+
+Both sources now use cosine similarity scores (0-1 range) so they are
+directly comparable when merged and sorted.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,26 +11,36 @@ from dataclasses import dataclass
 @dataclass
 class RankedResult:
     source: str    # "pinecone" | "neo4j"
-    score: float
+    score: float   # cosine similarity 0-1
     content: dict  # raw result object
 
 
 def rerank(
     pinecone_results: list[dict],
     neo4j_results: dict,
+    query_embedding: list[float] | None = None,
     top_k: int = 5,
 ) -> list[RankedResult]:
     """
-    Merge and score results from both retrievers.
-    Strategy:
-      - Pinecone results use their cosine similarity score directly (0–1).
-      - Neo4j results are scored by position (1.0 decaying by 0.1 per rank).
-      - Results are merged, sorted descending, and top_k * 2 returned
-        (giving the generation layer more to work with).
+    Merge and score results from Pinecone and Neo4j retrievers.
+
+    Both sources use cosine similarity scores so they are directly
+    comparable. Neo4j node scores come from the vector index query.
+    If Neo4j results have no score (fallback path), they are assigned 0.5.
+
+    Args:
+        pinecone_results: List of result dicts from PineconeRetriever.
+        neo4j_results:    Subgraph dict {nodes, links} from Neo4jRetriever.
+        query_embedding:  Optional — not used currently, reserved for future
+                          cross-source re-ranking.
+        top_k:            Number of top results to return per source.
+
+    Returns:
+        Merged list sorted by score descending.
     """
     ranked: list[RankedResult] = []
 
-    # Pinecone — cosine scores already in 0–1 range
+    # Pinecone — cosine similarity scores already 0-1
     for r in pinecone_results:
         ranked.append(RankedResult(
             source="pinecone",
@@ -34,16 +48,17 @@ def rerank(
             content=r,
         ))
 
-    # Neo4j — score by rank position
+    # Neo4j — nodes from vector search have a score field
+    # If no score present (e.g., from get_subgraph fallback), use 0.5
     nodes = neo4j_results.get("nodes", [])
-    for i, node in enumerate(nodes[:top_k]):
-        score = max(0.0, 1.0 - (i * 0.1))
+    for node in nodes[:top_k]:
+        score = float(node.get("score", 0.5))
         ranked.append(RankedResult(
             source="neo4j",
             score=score,
             content=node,
         ))
 
-    # Sort descending, return top_k * 2
+    # Sort by score descending, return top_k * 2 to give generation more context
     ranked.sort(key=lambda r: r.score, reverse=True)
     return ranked[:top_k * 2]

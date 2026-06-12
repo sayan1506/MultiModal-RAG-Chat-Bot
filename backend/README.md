@@ -1,114 +1,124 @@
 # Multimodal RAG Chatbot — Backend
 
-A modular FastAPI backend scaffold for a **Multimodal RAG Chatbot** that will eventually accept text, images, audio, PDFs, and PPTX files, using **Gemini**, **Pinecone**, **Neo4j**, and **CLIP** under the hood.
+## 1. Project Overview
 
-> **Current status — Phase 1**: clean project structure with stub endpoints ready for future integration.
+The backend for a **Multimodal RAG Chatbot** built on the **MegaRAG architecture**.
 
----
+- Ingests documents (PDF/PPTX) and builds both a dense vector store and a multimodal knowledge graph (MMKG).
+- Uses **GME multimodal embeddings** — text and page images share a single 1536-dim vector space, enabling true cross-modal retrieval.
+- **Two-stage generation**: a knowledge-graph answer and a visual (page-image) answer are produced in parallel, then fused into a single response by **GPT-4o-mini**.
 
-## Project Structure
+## 2. Tech Stack
 
+- **FastAPI** on **Python 3.12**
+- **GME-Qwen2-VL-2B-Instruct** — local, 4-bit quantized, 1536-dim multimodal embeddings
+- **Pinecone** — 1536-dim cosine similarity index
+- **Neo4j Desktop** — vector index + knowledge graph store
+- **GitHub Models GPT-4o-mini** — entity extraction, graph refinement, and answer generation
+- **Google Gemini** — fallback model
+- **Supabase** — chat history persistence
+
+## 3. Prerequisites
+
+- **Python 3.12** (not 3.13 — PyTorch is incompatible)
+- **CUDA-capable GPU** recommended (RTX 4050 or better)
+- **Neo4j Desktop** installed and running
+- **Pinecone** free tier account
+- **GitHub Personal Access Token** (no scopes needed)
+
+## 4. Setup Instructions
+
+1. Clone the repository.
+2. Create a virtual environment with Python 3.12:
+   ```bash
+   py -3.12 -m venv venv312
+   ```
+3. Activate it:
+   ```bash
+   venv312\Scripts\activate
+   ```
+4. Install PyTorch with CUDA support **first**:
+   ```bash
+   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+   ```
+5. Install the remaining requirements:
+   ```bash
+   pip install -r requirements.txt
+   ```
+6. Copy `.env.example` to `.env` and fill in your values:
+   ```bash
+   copy .env.example .env
+   ```
+7. Create a **Pinecone index**: 1536 dimensions, `cosine` metric, AWS `us-east-1`.
+8. Create the **Neo4j vector index** (see section 5).
+9. Run the server:
+   ```bash
+   uvicorn app.main:app --reload
+   ```
+
+## 5. Neo4j Vector Index Setup
+
+Run this Cypher in the Neo4j Browser before ingesting documents:
+
+```cypher
+CREATE VECTOR INDEX entity_embedding_index IF NOT EXISTS
+FOR (e:Entity) ON e.embedding
+OPTIONS {indexConfig: {
+  `vector.dimensions`: 1536,
+  `vector.similarity_function`: 'cosine'
+}}
 ```
-backend/
-├── app/
-│   ├── __init__.py
-│   ├── main.py            # FastAPI app, CORS, router registration
-│   ├── config.py           # pydantic-settings configuration
-│   ├── routers/
-│   │   ├── __init__.py
-│   │   ├── upload.py       # POST /api/upload
-│   │   ├── chat.py         # WS   /ws/chat
-│   │   ├── graph.py        # GET  /api/graph/{session_id}
-│   │   └── history.py      # GET  /api/history
-│   ├── ingestion/          # (future) file parsing & chunking
-│   ├── retrieval/          # (future) vector search & ranking
-│   ├── generation/         # (future) Gemini response generation
-│   └── knowledge_graph/    # (future) Neo4j graph operations
-├── .env.example
-├── requirements.txt
-└── README.md
-```
 
----
-
-## Endpoints
+## 6. API Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/health` | Liveness probe — returns `{"status": "ok"}` |
-| `POST` | `/api/upload` | Accepts a file upload, returns a stub acknowledgement |
-| `GET` | `/api/graph/{session_id}` | Returns knowledge-graph nodes & links (stub) |
-| `GET` | `/api/history` | Returns chat history (stub) |
-| `WS` | `/ws/chat` | WebSocket — mock token-by-token streaming |
+| `POST` | `/api/upload` | Ingest a PDF document |
+| `WS`   | `/ws/chat` | WebSocket chat with streaming responses |
+| `GET`  | `/api/graph/{session_id}` | Knowledge graph for a session |
+| `GET`  | `/api/history` | Chat history |
+| `GET`  | `/health` | Liveness check |
 
----
+## 7. WebSocket Message Format
 
-## Setup
-
-### 1. Clone & navigate
-
-```bash
-cd backend
-```
-
-### 2. Create a virtual environment
-
-```bash
-python -m venv venv
-```
-
-Activate it:
-
-- **Windows (PowerShell):** `.\venv\Scripts\Activate.ps1`
-- **Windows (CMD):** `.\venv\Scripts\activate.bat`
-- **macOS / Linux:** `source venv/bin/activate`
-
-### 3. Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-### 4. Configure environment variables
-
-```bash
-copy .env.example .env   # Windows
-# cp .env.example .env   # macOS / Linux
-```
-
-Edit `.env` and fill in any keys you need (not required for Phase 1).
-
-### 5. Run the server
-
-```bash
-uvicorn app.main:app --reload
-```
-
-The API is now available at **http://127.0.0.1:8000**.
-
-Interactive docs: **http://127.0.0.1:8000/docs**
-
----
-
-## Testing the WebSocket
-
-You can use [websocat](https://github.com/vi/websocat) or the Swagger UI to test:
-
-```bash
-websocat ws://127.0.0.1:8000/ws/chat
-{"text": "hello world"}
-```
-
-Expected streamed response:
+**Client sends:**
 
 ```json
-{"type":"token","data":"hello "}
-{"type":"token","data":"world "}
-{"type":"done"}
+{"type": "query", "text": "your question", "session_id": "abc"}
 ```
 
----
+**Server streams:**
 
-## License
+```json
+{"type": "token", "data": "word "}
+```
+(repeated per word)
 
-This project is private and not yet licensed for distribution.
+```json
+{"type": "citations", "data": {...}}
+{"type": "done"}
+```
+
+## 8. Project Structure
+
+```
+app/
+├── ingestion/        - PDF parsing, GME embeddings, entity extraction
+├── knowledge_graph/  - Neo4j store, MMKG builder, graph refiner
+├── retrieval/        - Query analyzer, Pinecone + Neo4j retrieval, reranker
+├── generation/       - KG answerer, visual answerer, answer generator,
+│                       generation pipeline
+└── routers/          - FastAPI route handlers
+```
+
+## 9. Rate Limits
+
+- **GitHub GPT-4o-mini**: 150 requests/day, 10 requests/minute
+- **Gemini**: free tier quotas apply
+- For large documents, ingestion may be slow due to rate limiting (entity extraction is throttled to respect the 10 RPM limit).
+
+## 10. Known Issues
+
+- GME loads on the first request (~7s) but is cached for all subsequent requests. The startup warmup pre-loads it to avoid a slow first query.
+- Neo4j `db.index.vector.queryNodes` may emit a deprecation warning (harmless).
+- Images require a clean re-ingestion if a `file_id` mismatch occurs.

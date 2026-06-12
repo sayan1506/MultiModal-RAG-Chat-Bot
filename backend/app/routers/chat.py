@@ -5,7 +5,6 @@ import asyncio
 import json
 from collections import defaultdict
 
-import ollama
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from app.retrieval.query_analyzer import analyze_query
@@ -16,6 +15,7 @@ from app.retrieval.reranker import rerank
 from app.generation.kg_answerer import answer_from_kg
 from app.generation.visual_answerer import answer_from_images
 from app.generation.history import save_turn
+from app.ingestion.github_client import call_gpt4o_mini
 
 router = APIRouter(tags=["chat"])
 
@@ -23,9 +23,6 @@ router = APIRouter(tags=["chat"])
 _pinecone_ret  = PineconeRetriever()
 _neo4j_ret     = Neo4jRetriever()
 _image_fetcher = ImageFetcher()
-
-# Ollama model preference order
-MODELS = ["gemma4:e4b", "gemma4:26b"]
 
 
 @router.websocket("/ws/chat")
@@ -172,41 +169,18 @@ Instructions:
 - Do NOT invent information."""
 
                 # ── 8. Stream merged answer token by token ────────────────────
-                full_response = ""
-                ollama_client  = ollama.AsyncClient(host="http://localhost:11434")
-                streamed_ok    = False
-
-                for model in MODELS:
-                    try:
-                        async for chunk in await ollama_client.chat(
-                            model=model,
-                            messages=[{"role": "user", "content": merge_prompt}],
-                            stream=True,
-                        ):
-                            token: str = chunk["message"]["content"] or ""
-                            if token:
-                                full_response += token
-                                await websocket.send_json(
-                                    {"type": "token", "data": token}
-                                )
-                        streamed_ok = True
-                        break
-                    except Exception as stream_err:
-                        print(
-                            f"[chat] {model} streaming failed: {stream_err}, "
-                            "trying next model..."
-                        )
-                        full_response = ""
-                        continue
-
-                if not streamed_ok:
+                full_response = call_gpt4o_mini(merge_prompt, max_tokens=1000)
+                if not full_response:
                     full_response = (
                         "Sorry, I was unable to generate an answer. "
-                        "Please ensure Ollama is running and try again."
+                        "Please try again."
                     )
-                    await websocket.send_json(
-                        {"type": "token", "data": full_response}
-                    )
+
+                # Stream the response token by token (word-level simulation)
+                words = full_response.split(" ")
+                for word in words:
+                    await websocket.send_json({"type": "token", "data": word + " "})
+                    await asyncio.sleep(0.02)
 
                 # ── 9. Build citations with correct image_url ─────────────────
                 # Use (file_id, page_number) tuple to look up image paths —

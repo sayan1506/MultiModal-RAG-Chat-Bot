@@ -1,57 +1,43 @@
-"""Visual answerer — answers questions from page screenshots using Gemma 4 vision."""
+"""Visual answerer — answers questions from page screenshots.
+
+Uses GPT-4o-mini vision (paper-faithful) with Gemma4 as fallback.
+Caps at top_m_pages images (paper default: 6).
+"""
 from __future__ import annotations
 
-import ollama
-
-MODELS = ["gemma4:e4b", "gemma4:26b"]
+from app.config import settings
+from app.ingestion.github_client import call_gpt4o_mini_vision_async
 
 
 async def answer_from_images(query: str, page_images: list[dict]) -> str:
     """
-    Send up to 3 page PNG screenshots to Gemma 4 and return an answer.
+    Answer the user query using retrieved document page screenshots.
 
     Args:
         query:       The user's question.
         page_images: List of dicts from ImageFetcher.fetch_pages().
-                     Each dict has keys: page_number (int),
-                     image_bytes (bytes), image_url (str).
+                     Each dict has: page_number (int), image_bytes (bytes).
 
     Returns:
-        A string answer, or "" if no images were provided or all models fail.
+        A string answer, or "" if no images or all models fail.
     """
     if not page_images:
         return ""
 
-    # Cap at 3 images to stay within context limits
-    images_to_use = page_images[:3]
-
-    # Ollama vision: pass raw bytes in the images list of the message
+    # Cap at top_m_pages (paper default: 6)
+    images_to_use = page_images[:settings.top_m_pages]
     image_bytes_list = [img["image_bytes"] for img in images_to_use]
 
-    prompt_text = (
-        f"Answer this question using ONLY the document pages shown in the images.\n"
-        f"If the answer is not visible in the pages, say so clearly.\n\n"
+    prompt = (
+        "You are answering a question based solely on the document pages shown.\n"
+        "Carefully examine all provided pages for relevant information.\n"
+        "If the answer is not visible in the pages, say so clearly.\n\n"
         f"Question: {query}"
     )
 
-    client = ollama.AsyncClient(host="http://localhost:11434")
-
-    for model in MODELS:
-        try:
-            response = await client.chat(
-                model=model,
-                messages=[
-                    {
-                        "role": "user",
-                        "content": prompt_text,
-                        "images": image_bytes_list,  # raw bytes — SDK handles encoding
-                    }
-                ],
-            )
-            return response["message"]["content"] or ""
-        except Exception as e:
-            print(f"[visual_answerer] {model} error: {e}, trying next model...")
-            continue
-
-    print("[visual_answerer] All models failed.")
-    return ""
+    return await call_gpt4o_mini_vision_async(
+        prompt=prompt,
+        image_bytes_list=image_bytes_list,
+        max_tokens=1500,
+        temperature=0.0,
+    )

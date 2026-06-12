@@ -77,6 +77,72 @@ class Neo4jStore:
                 tgt=target_label,
             )
 
+    async def set_entity_embedding(self, entity_label: str, embedding: list[float]):
+        """Store a 1536-dim GME embedding on an Entity node."""
+        async with self.driver.session() as s:
+            await s.run(
+                """
+                MATCH (e:Entity {label: $label})
+                SET e.embedding = $embedding
+                """,
+                label=entity_label,
+                embedding=embedding,
+            )
+
+    async def vector_search_entities(
+        self, query_embedding: list[float], top_k: int = 60
+    ) -> list[dict]:
+        """
+        Dense vector search over Entity nodes using Neo4j vector index.
+        Returns up to top_k entities sorted by cosine similarity.
+        Requires the entity_embedding_index vector index to exist.
+        """
+        async with self.driver.session() as s:
+            result = await s.run(
+                """
+                CALL db.index.vector.queryNodes(
+                    'entity_embedding_index',
+                    $top_k,
+                    $embedding
+                )
+                YIELD node, score
+                RETURN node.label   AS label,
+                       node.type    AS type,
+                       node.id      AS id,
+                       score
+                ORDER BY score DESC
+                """,
+                top_k=top_k,
+                embedding=query_embedding,
+            )
+            records = await result.data()
+        return records
+
+    async def get_one_hop_neighbors(self, entity_labels: list[str]) -> dict:
+        """
+        Expand a set of entity labels to include their 1-hop neighbors.
+        Returns a subgraph dict {nodes, links}.
+        """
+        if not entity_labels:
+            return {"nodes": [], "links": []}
+
+        async with self.driver.session() as s:
+            result = await s.run(
+                """
+                UNWIND $labels AS lbl
+                MATCH (e:Entity {label: lbl})
+                OPTIONAL MATCH (e)-[r]-(neighbor:Entity)
+                RETURN e, r, neighbor,
+                       e.id       AS src_id,
+                       neighbor.id AS tgt_id,
+                       type(r)    AS rel_type
+                """,
+                labels=entity_labels,
+            )
+            records = await result.data()
+
+        return self._format_subgraph(records)
+
     # ── Read operations ──────────────────────────────────────────────────
 
     async def get_subgraph(
