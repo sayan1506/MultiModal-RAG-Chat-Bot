@@ -68,15 +68,13 @@ async def chat_websocket(websocket: WebSocket) -> None:
             try:
                 # ── 1. Query Analysis ────────────────────────────────────────
                 analysis = await analyze_query(query)
-                keywords: list[str] = (
-                    analysis.get("low_level_keywords", [])
-                    + analysis.get("high_level_concepts", [])
-                )
+                low_level_keywords:  list[str] = analysis.get("low_level_keywords", [])
+                high_level_keywords: list[str] = analysis.get("high_level_keywords", [])
 
                 # ── 2. Parallel Retrieval ────────────────────────────────────
                 pinecone_results, neo4j_results = await asyncio.gather(
                     asyncio.to_thread(_pinecone_ret.retrieve, query, 5),
-                    _neo4j_ret.retrieve(keywords),
+                    _neo4j_ret.retrieve(low_level_keywords, high_level_keywords),
                 )
 
                 # ── 3. Re-rank ───────────────────────────────────────────────
