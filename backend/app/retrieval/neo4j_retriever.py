@@ -70,5 +70,7 @@ class Neo4jRetriever:
             entity_labels=list(all_entity_labels)
         )
 
-        await self.store.close()
+        # NOTE: do NOT close the driver here. This retriever is a long-lived
+        # singleton (see chat.py); closing per-request kills the shared driver
+        # so every query after the first fails with "Driver closed".
         return subgraph
