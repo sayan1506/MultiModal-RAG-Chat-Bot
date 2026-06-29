@@ -1,56 +1,74 @@
-"""Query analyzer — decomposes user query into keywords and semantic concepts."""
+"""Query analyzer — extracts low-level and high-level keywords from user query.
+
+Low-level keywords  → entity store retrieval (specific named entities)
+High-level keywords → relation store retrieval (broad concepts/themes)
+
+Model: GitHub GPT-4o-mini → Gemma4 fallback
+"""
 from __future__ import annotations
 
 import json
 import re
 
-from google import genai
-from app.config import settings
+from app.ingestion.github_client import call_gpt4o_mini_async
 
-client = genai.Client(api_key=settings.gemini_api_key)
+_ANALYSIS_PROMPT = """Analyze the following user query for a document retrieval system.
 
-ANALYSIS_PROMPT = """Analyze this search query for a RAG system.
+Extract two types of keywords:
+1. low_level_keywords: Specific named entities, technical terms, people,
+   organizations, or precise concepts (for entity-level graph retrieval)
+2. high_level_keywords: Broader themes, topics, or conceptual categories
+   (for relation-level graph retrieval)
 
-Query: "{query}"
+User query: {query}
 
-Return ONLY valid JSON — no markdown, no explanation:
+Return ONLY this JSON (no markdown, no explanation):
 {{
-  "low_level_keywords":  ["exact term1", "exact term2"],
-  "high_level_concepts": ["semantic concept1", "semantic concept2"],
-  "query_type": "factual|analytical|visual|comparative"
+  "low_level_keywords": ["keyword1", "keyword2"],
+  "high_level_keywords": ["theme1", "theme2"]
 }}"""
+
+_EMPTY_ANALYSIS = {
+    "low_level_keywords": [],
+    "high_level_keywords": [],
+}
 
 
 async def analyze_query(query: str) -> dict:
     """
+    Extract low-level and high-level keywords from a user query.
+
     Returns:
-        low_level_keywords  — exact words to match in Neo4j entity labels
-        high_level_concepts — broader semantic terms for Pinecone search
-        query_type          — hint for generation layer
+        Dict with "low_level_keywords" and "high_level_keywords" lists.
+        Falls back to treating the whole query as low-level keywords on failure.
     """
+    prompt = _ANALYSIS_PROMPT.format(query=query)
+    raw = await call_gpt4o_mini_async(prompt, max_tokens=200, temperature=0.0)
+
+    if not raw:
+        # Minimal fallback: split query into words as keywords
+        words = [w.strip(".,?!") for w in query.split() if len(w) > 3]
+        return {"low_level_keywords": words[:5], "high_level_keywords": []}
+
+    # Strip markdown fences
+    raw = re.sub(r"```(?:json)?", "", raw).strip().rstrip("`").strip()
+
     try:
-        response = client.models.generate_content(
-            model="gemini-2.0-flash-lite",
-            contents=[ANALYSIS_PROMPT.format(query=query)],
-        )
-        raw = response.text
-        raw = re.sub(r"```(?:json)?", "", raw).strip()
-        return json.loads(raw)
-
+        result = json.loads(raw)
+        if "low_level_keywords" in result and "high_level_keywords" in result:
+            return result
     except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                pass
+        pass
 
-    except Exception as e:
-        print(f"Query analysis failed: {e}")
+    # Fallback parse
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if match:
+        try:
+            result = json.loads(match.group())
+            if "low_level_keywords" in result:
+                return result
+        except json.JSONDecodeError:
+            pass
 
-    # Fallback — split the raw query into keywords
-    return {
-        "low_level_keywords":  query.split(),
-        "high_level_concepts": [query],
-        "query_type":          "factual",
-    }
+    words = [w.strip(".,?!") for w in query.split() if len(w) > 3]
+    return {"low_level_keywords": words[:5], "high_level_keywords": []}

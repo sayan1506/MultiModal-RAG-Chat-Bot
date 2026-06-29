@@ -6,6 +6,7 @@ import base64
 from app.knowledge_graph.entity_extractor import extract_entities
 from app.knowledge_graph.neo4j_store import Neo4jStore
 from app.knowledge_graph.gcs_store import GCSStore
+from app.ingestion.gme_embedder import embed_text
 
 
 class MMKGBuilder:
@@ -57,6 +58,14 @@ class MMKGBuilder:
             # 4. Create Entity nodes
             for entity in extracted.get("entities", []):
                 await self.neo4j.create_entity_node(entity, page_node_id)
+                # Store GME embedding on the entity node for dense retrieval
+                if entity.get("description"):
+                    embed_text_input = f"{entity['label']} {entity.get('description', '')}"
+                else:
+                    embed_text_input = entity["label"]
+                embedding = embed_text(embed_text_input)
+                if embedding:
+                    await self.neo4j.set_entity_embedding(entity["label"], embedding)
                 entity_count += 1
 
             # 5. Create relationships

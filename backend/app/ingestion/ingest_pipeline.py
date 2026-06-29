@@ -7,7 +7,7 @@ from pathlib import Path
 
 from app.ingestion.parser import parse_file
 from app.ingestion.renderer import render_pdf_pages, render_pptx_pages
-from app.ingestion.gemini_embedder import embed_text_and_image, embed_text
+from app.ingestion.gme_embedder import embed_text_and_image, embed_text
 from app.ingestion.pinecone_upserter import upsert_vector
 
 # Shared handoff store for Dev B (knowledge graph pipeline).
@@ -100,6 +100,17 @@ def ingest_document(file_path: str, file_id: str, filename: str) -> None:
             builder.build(
                 file_id=file_id,
                 filename=filename,
+                parsed_pages=parsed_dicts,
+                rendered_pages=rendered_dicts,
+            )
+        )
+
+        # Run graph refinement (MegaRAG paper Section 3.1, stage 2)
+        from app.knowledge_graph.graph_refiner import GraphRefiner
+        refiner = GraphRefiner()
+        asyncio.run(
+            refiner.refine(
+                file_id=file_id,
                 parsed_pages=parsed_dicts,
                 rendered_pages=rendered_dicts,
             )

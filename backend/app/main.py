@@ -6,15 +6,29 @@ endpoint for liveness checks.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import chat, graph, history, upload
+from app.ingestion.gme_embedder import embed_text
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Pre-load GME model at startup so first query isn't slow
+    import asyncio
+    await asyncio.to_thread(embed_text, "warmup")
+    print("[startup] GME model pre-loaded and ready.")
+    yield
+
 
 app = FastAPI(
     title="Multimodal RAG Chatbot",
-    description="Phase 1 scaffold — clean backend foundation for a multimodal RAG system.",
+    description="Phase 1 scaffold - clean backend foundation.",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 # ── CORS ─────────────────────────────────────────────────────

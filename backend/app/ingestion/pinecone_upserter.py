@@ -1,8 +1,7 @@
 from pinecone import Pinecone, ServerlessSpec
 from app.config import settings
 
-# Gemini embedding-001 outputs 3072-dim vectors
-DIMENSION = 3072
+DIMENSION = 1536  # GME-Qwen2-VL-2B output dimension
 
 
 def _get_index():

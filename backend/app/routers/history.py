@@ -1,58 +1,36 @@
-"""History router — chat history retrieval endpoints via Supabase.
-
-Provides endpoints to retrieve conversation history for specific sessions
-or list all available sessions.
-"""
-
+"""History router — returns past conversation turns from Supabase."""
 from __future__ import annotations
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter
 
-from app.generation.history import ConversationHistory
+from app.generation.history import get_history
 
 router = APIRouter(prefix="/api", tags=["history"])
 
 
-@router.get("/history/{session_id}")
-async def get_session_history(
-    session_id: str,
-    limit: int = Query(50, description="Maximum number of turns to retrieve"),
-) -> dict[str, list[dict]]:
-    """Retrieve conversation history for a specific session.
-
-    Args:
-        session_id: Unique session identifier
-        limit: Maximum number of turns to retrieve (default: 50)
-
-    Returns:
-        Dict with 'messages' key containing list of conversation turns
+@router.get("/history")
+async def get_conversation_history(session_id: str | None = None) -> dict:
     """
-    history_manager = ConversationHistory()
-    messages = await history_manager.get_session_history(
-        session_id=session_id,
-        limit=limit,
-    )
+    Return past conversation turns, newest first.
 
-    return {
-        "messages": messages,
-    }
+    Query parameters:
+        session_id (optional): Filter to a specific session.
+                               Omit to return the 50 most recent turns globally.
 
-
-@router.get("/sessions")
-async def get_all_sessions(
-    limit: int = Query(100, description="Maximum number of sessions to retrieve"),
-) -> dict[str, list[dict]]:
-    """Retrieve all conversation sessions.
-
-    Args:
-        limit: Maximum number of sessions to retrieve (default: 100)
-
-    Returns:
-        Dict with 'sessions' key containing list of session summaries
+    Response shape:
+        {
+          "messages": [
+            {
+              "id":           "uuid",
+              "session_id":   "string",
+              "user_message": "string",
+              "ai_response":  "string",
+              "citations":    { "pages": [...], "nodes": [...] },
+              "created_at":   "ISO timestamp"
+            },
+            ...
+          ]
+        }
     """
-    history_manager = ConversationHistory()
-    sessions = await history_manager.get_all_sessions(limit=limit)
-
-    return {
-        "sessions": sessions,
-    }
+    messages = await get_history(session_id=session_id)
+    return {"messages": messages}
