@@ -79,9 +79,11 @@ The single embedding model (GME) places text and page images in the **same 1536-
 
 7. Run the server:
    ```bash
-   uvicorn app.main:app --reload
+   python -m app.main
    ```
-   On startup the GME model is pre-loaded (a warmup embed) so the first real query isn't slow.
+   This serves on **port 8080** (the `__main__` block in `app/main.py`). On startup the GME model is pre-loaded (a warmup embed) so the first real query isn't slow.
+
+   > Prefer the `uvicorn` CLI? It ignores the `__main__` block and defaults to 8000, so pass the port explicitly: `uvicorn app.main:app --reload --port 8080`.
 
 ---
 

@@ -6,7 +6,7 @@ import react from "@vitejs/plugin-react";
 // These proxy rules forward REST + WebSocket traffic to the FastAPI
 // backend, so every request the browser makes is same-origin and CORS
 // never comes into play. Override the target with VITE_BACKEND_URL.
-const BACKEND = process.env.VITE_BACKEND_URL || "http://localhost:8000";
+const BACKEND = process.env.VITE_BACKEND_URL || "http://localhost:8080";
 
 export default defineConfig({
   plugins: [react()],

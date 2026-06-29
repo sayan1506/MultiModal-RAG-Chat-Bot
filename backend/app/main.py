@@ -52,3 +52,13 @@ app.include_router(history.router)
 async def health_check() -> dict[str, str]:
     """Liveness probe — returns ``{"status": "ok"}``."""
     return {"status": "ok"}
+
+
+# ── Entry-point ──────────────────────────────────────────────
+# Run with `python -m app.main` to always serve on port 8080.
+# (The bare `uvicorn app.main:app` CLI ignores this block and
+# still defaults to 8000 — pass `--port 8080` there instead.)
+if __name__ == "__main__":
+    import uvicorn
+
+    uvicorn.run("app.main:app", host="127.0.0.1", port=8080, reload=True)
